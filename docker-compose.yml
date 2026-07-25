@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: scheduler-postgres
+    environment:
+      POSTGRES_DB: scheduler
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scheduler-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: scheduler-redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scheduler-network
+
+  server:
+    build:
+      context: .
+      target: server
+    container_name: scheduler-server
+    ports:
+      - "50051:50051"
+      - "9090:9090"
+    environment:
+      GRPC_PORT: "50051"
+      METRICS_PORT: "9090"
+      POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/scheduler?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      WORKER_CONCURRENCY: "5"
+      LOG_LEVEL: "debug"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scheduler-network
+
+  worker:
+    build:
+      context: .
+      target: worker
+    container_name: scheduler-worker
+    ports:
+      - "9091:9090"
+    environment:
+      GRPC_PORT: "50051"
+      METRICS_PORT: "9090"
+      POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/scheduler?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      WORKER_CONCURRENCY: "10"
+      LOG_LEVEL: "debug"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scheduler-network
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: scheduler-prometheus
+    ports:
+      - "9092:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - scheduler-network
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: scheduler-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - scheduler-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  scheduler-network:
+    driver: bridge

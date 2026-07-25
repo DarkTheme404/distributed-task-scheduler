@@ -1,0 +1,178 @@
+syntax = "proto3";
+
+package scheduler;
+
+option go_package = "github.com/DarkTheme404/distributed-task-scheduler/proto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// TaskStatus represents the current state of a task.
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING = 1;
+  TASK_STATUS_QUEUED = 2;
+  TASK_STATUS_RUNNING = 3;
+  TASK_STATUS_COMPLETED = 4;
+  TASK_STATUS_FAILED = 5;
+  TASK_STATUS_CANCELLED = 6;
+  TASK_STATUS_RETRYING = 7;
+}
+
+// TaskPriority represents task execution priority.
+enum TaskPriority {
+  TASK_PRIORITY_LOW = 0;
+  TASK_PRIORITY_NORMAL = 1;
+  TASK_PRIORITY_HIGH = 2;
+  TASK_PRIORITY_CRITICAL = 3;
+}
+
+// Task represents a schedulable unit of work.
+message Task {
+  string id = 1;
+  string name = 2;
+  string type = 3;
+  map<string, string> payload = 4;
+  TaskPriority priority = 5;
+  TaskStatus status = 6;
+  int32 max_retries = 7;
+  int32 retry_count = 8;
+  string error_message = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+  google.protobuf.Timestamp scheduled_at = 12;
+  google.protobuf.Timestamp completed_at = 13;
+  repeated string dependencies = 14;
+  string parent_dag_id = 15;
+}
+
+// DAG represents a directed acyclic graph of tasks.
+message DAG {
+  string id = 1;
+  string name = 2;
+  map<string, Task> tasks = 3;
+  map<string, repeated string> edges = 4;
+  TaskStatus status = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp completed_at = 7;
+}
+
+// SubmitTaskRequest is the request to submit a new task.
+message SubmitTaskRequest {
+  string name = 1;
+  string type = 2;
+  map<string, string> payload = 3;
+  TaskPriority priority = 4;
+  int32 max_retries = 5;
+  google.protobuf.Timestamp scheduled_at = 6;
+  repeated string dependencies = 7;
+}
+
+// SubmitTaskResponse is the response after submitting a task.
+message SubmitTaskResponse {
+  Task task = 1;
+  string message = 2;
+}
+
+// SubmitDAGRequest is the request to submit a DAG.
+message SubmitDAGRequest {
+  string name = 1;
+  repeated DAGDefinitionNode nodes = 2;
+  repeated DAGDefinitionEdge edges = 3;
+}
+
+message DAGDefinitionNode {
+  string name = 1;
+  string type = 2;
+  map<string, string> payload = 3;
+  TaskPriority priority = 4;
+  int32 max_retries = 5;
+}
+
+message DAGDefinitionEdge {
+  string from = 1;
+  string to = 2;
+}
+
+// SubmitDAGResponse is the response after submitting a DAG.
+message SubmitDAGResponse {
+  DAG dag = 1;
+  string message = 2;
+}
+
+// GetTaskRequest is the request to get a task by ID.
+message GetTaskRequest {
+  string task_id = 1;
+}
+
+// GetDAGRequest is the request to get a DAG by ID.
+message GetDAGRequest {
+  string dag_id = 1;
+}
+
+// CancelTaskRequest is the request to cancel a task.
+message CancelTaskRequest {
+  string task_id = 1;
+}
+
+// CancelTaskResponse is the response after cancelling a task.
+message CancelTaskResponse {
+  string message = 1;
+}
+
+// ListTasksRequest is the request to list tasks with filters.
+message ListTasksRequest {
+  TaskStatus status = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+// ListTasksResponse is the response containing a list of tasks.
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  string next_page_token = 2;
+}
+
+// TaskEvent represents a real-time task status change.
+message TaskEvent {
+  string task_id = 1;
+  TaskStatus status = 2;
+  string error_message = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+// SchedulerService is the main gRPC service.
+service SchedulerService {
+  // SubmitTask submits a single task for execution.
+  rpc SubmitTask(SubmitTaskRequest) returns (SubmitTaskResponse);
+
+  // SubmitDAG submits a directed acyclic graph of tasks.
+  rpc SubmitDAG(SubmitDAGRequest) returns (SubmitDAGResponse);
+
+  // GetTask retrieves task details by ID.
+  rpc GetTask(GetTaskRequest) returns (Task);
+
+  // GetDAG retrieves DAG details by ID.
+  rpc GetDAG(GetDAGRequest) returns (DAG);
+
+  // CancelTask cancels a pending or running task.
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+
+  // ListTasks lists tasks with optional status filter and pagination.
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+
+  // StreamTaskEvents streams real-time task status updates.
+  rpc StreamTaskEvents(google.protobuf.Empty) returns (stream TaskEvent);
+
+  // StreamTaskResults streams completed/failed task results.
+  rpc StreamTaskResults(google.protobuf.Empty) returns (stream Task);
+
+  // HealthCheck returns the health status of the service.
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+message HealthCheckResponse {
+  string status = 1;
+  bool postgres_healthy = 2;
+  bool redis_healthy = 3;
+}
