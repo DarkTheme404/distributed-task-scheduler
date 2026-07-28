@@ -26,24 +26,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize storage
 	pgStore, err := storage.NewPostgresStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		logger.Fatal("Failed to connect to PostgreSQL", zap.Error(err))
 	}
 	defer pgStore.Close()
 
-	// Initialize Redis queue
 	redisQueue, err := queue.NewRedisQueue(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 	if err != nil {
 		logger.Fatal("Failed to connect to Redis", zap.Error(err))
 	}
 	defer redisQueue.Close()
 
-	// Initialize metrics
 	m := metrics.NewMetrics()
 
-	// Initialize worker
 	w := worker.New(worker.Config{
 		Concurrency: cfg.WorkerConcurrency,
 		Queue:       redisQueue,
@@ -52,7 +48,6 @@ func main() {
 		Logger:      logger,
 	})
 
-	// HTTP server for health checks
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -81,7 +76,6 @@ func main() {
 		}
 	}()
 
-	// Start worker
 	go func() {
 		logger.Info("Worker starting", zap.Int("concurrency", cfg.WorkerConcurrency))
 		if err := w.Start(ctx); err != nil {
@@ -89,7 +83,6 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh

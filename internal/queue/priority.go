@@ -8,22 +8,21 @@ import (
 	pb "github.com/DarkTheme404/distributed-task-scheduler/proto"
 )
 
-// PriorityQueueItem represents an item in the priority queue.
 type PriorityQueueItem struct {
-	Task     *pb.Task
-	Priority int
-	Index    int
+	Task       *pb.Task
+	Priority   int
+	Index      int
 	EnqueuedAt time.Time
 }
 
-// PriorityQueue implements a heap-based priority queue.
+// PriorityQueue — куча (heap) с индексом по task ID для быстрого поиска и удаления.
+// Используем container/heap, который реализует min-heap, но с Less反转ым — получаем max-heap по приоритету.
 type PriorityQueue struct {
 	items []*PriorityQueueItem
 	index map[string]*PriorityQueueItem
 	mu    sync.RWMutex
 }
 
-// NewPriorityQueue creates a new priority queue.
 func NewPriorityQueue() *PriorityQueue {
 	pq := &PriorityQueue{
 		items: make([]*PriorityQueueItem, 0),
@@ -33,14 +32,13 @@ func NewPriorityQueue() *PriorityQueue {
 	return pq
 }
 
-// Len returns the number of items in the queue.
 func (pq *PriorityQueue) Len() int {
 	pq.mu.RLock()
 	defer pq.mu.RUnlock()
 	return len(pq.items)
 }
 
-// Less compares two items by priority and enqueue time.
+// Less — приоритет выше = раньше. При одинаковом приоритете — кто раньше добавлен, тот раньше.
 func (pq *PriorityQueue) Less(i, j int) bool {
 	if pq.items[i].Priority != pq.items[j].Priority {
 		return pq.items[i].Priority > pq.items[j].Priority
@@ -48,14 +46,12 @@ func (pq *PriorityQueue) Less(i, j int) bool {
 	return pq.items[i].EnqueuedAt.Before(pq.items[j].EnqueuedAt)
 }
 
-// Swap swaps two items in the queue.
 func (pq *PriorityQueue) Swap(i, j int) {
 	pq.items[i], pq.items[j] = pq.items[j], pq.items[i]
 	pq.items[i].Index = i
 	pq.items[j].Index = j
 }
 
-// Push adds an item to the queue.
 func (pq *PriorityQueue) Push(x interface{}) {
 	item := x.(*PriorityQueueItem)
 	item.Index = len(pq.items)
@@ -63,7 +59,6 @@ func (pq *PriorityQueue) Push(x interface{}) {
 	pq.index[item.Task.Id] = item
 }
 
-// Pop removes and returns the highest-priority item.
 func (pq *PriorityQueue) Pop() interface{} {
 	old := pq.items
 	n := len(old)
@@ -75,7 +70,6 @@ func (pq *PriorityQueue) Pop() interface{} {
 	return item
 }
 
-// Enqueue adds a task to the priority queue.
 func (pq *PriorityQueue) Enqueue(task *pb.Task) {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
@@ -85,15 +79,14 @@ func (pq *PriorityQueue) Enqueue(task *pb.Task) {
 	}
 
 	item := &PriorityQueueItem{
-		Task:      task,
-		Priority:  int(task.Priority),
+		Task:       task,
+		Priority:   int(task.Priority),
 		EnqueuedAt: time.Now(),
 	}
 
 	heap.Push(pq, item)
 }
 
-// Dequeue removes and returns the highest-priority task.
 func (pq *PriorityQueue) Dequeue() *pb.Task {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
@@ -106,7 +99,6 @@ func (pq *PriorityQueue) Dequeue() *pb.Task {
 	return item.Task
 }
 
-// Peek returns the highest-priority task without removing it.
 func (pq *PriorityQueue) Peek() *pb.Task {
 	pq.mu.RLock()
 	defer pq.mu.RUnlock()
@@ -118,7 +110,6 @@ func (pq *PriorityQueue) Peek() *pb.Task {
 	return pq.items[0].Task
 }
 
-// Remove removes a task from the priority queue by ID.
 func (pq *PriorityQueue) Remove(taskID string) bool {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
@@ -132,7 +123,6 @@ func (pq *PriorityQueue) Remove(taskID string) bool {
 	return true
 }
 
-// Contains checks if a task is in the queue.
 func (pq *PriorityQueue) Contains(taskID string) bool {
 	pq.mu.RLock()
 	defer pq.mu.RUnlock()
@@ -141,7 +131,6 @@ func (pq *PriorityQueue) Contains(taskID string) bool {
 	return exists
 }
 
-// UpdatePriority changes the priority of a task.
 func (pq *PriorityQueue) UpdatePriority(taskID string, newPriority int) bool {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
@@ -156,7 +145,6 @@ func (pq *PriorityQueue) UpdatePriority(taskID string, newPriority int) bool {
 	return true
 }
 
-// Tasks returns a copy of all tasks in the queue.
 func (pq *PriorityQueue) Tasks() []*pb.Task {
 	pq.mu.RLock()
 	defer pq.mu.RUnlock()

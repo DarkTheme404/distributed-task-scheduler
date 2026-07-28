@@ -13,16 +13,14 @@ import (
 )
 
 const (
-	defaultQueueKey     = "scheduler:queue"
-	deadLetterKey       = "scheduler:deadletter"
-	scheduledKey        = "scheduler:scheduled"
-	priorityQueueKey    = "scheduler:priority"
-	lockKeyPrefix       = "scheduler:lock:"
-	defaultLockTTL      = 30 * time.Second
-	defaultRetryBackoff = 5 * time.Second
+	defaultQueueKey  = "scheduler:queue"
+	deadLetterKey    = "scheduler:deadletter"
+	scheduledKey     = "scheduler:scheduled"
+	priorityQueueKey = "scheduler:priority"
+	lockKeyPrefix    = "scheduler:lock:"
+	defaultLockTTL   = 30 * time.Second
 )
 
-// Queue defines the interface for task queue operations.
 type Queue interface {
 	Enqueue(ctx context.Context, task *pb.Task) error
 	Dequeue(ctx context.Context) (*pb.Task, error)
@@ -36,14 +34,12 @@ type Queue interface {
 	DeadLetterSize(ctx context.Context) (int64, error)
 }
 
-// RedisQueue implements Queue using Redis sorted sets.
 type RedisQueue struct {
 	client  *redis.Client
 	metrics *metrics.Metrics
 	logger  *zap.Logger
 }
 
-// NewRedisQueue creates a new Redis-backed queue.
 func NewRedisQueue(addr, password string, db int) (*RedisQueue, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:         addr,
@@ -69,17 +65,17 @@ func NewRedisQueue(addr, password string, db int) (*RedisQueue, error) {
 	}, nil
 }
 
-// SetMetrics sets the metrics collector for the queue.
 func (q *RedisQueue) SetMetrics(m *metrics.Metrics) {
 	q.metrics = m
 }
 
-// SetLogger sets the logger for the queue.
 func (q *RedisQueue) SetLogger(logger *zap.Logger) {
 	q.logger = logger
 }
 
-// Enqueue adds a task to the priority queue sorted by priority and timestamp.
+// Enqueue — добавляем задачу в два sorted set одновременно через pipeline:
+// priorityQueueKey — для выборки по приоритету (score = приоритет * 1M + timestamp)
+// defaultQueueKey — для отслеживания активных задач по ID.
 func (q *RedisQueue) Enqueue(ctx context.Context, task *pb.Task) error {
 	data, err := json.Marshal(task)
 	if err != nil {
@@ -114,9 +110,9 @@ func (q *RedisQueue) Enqueue(ctx context.Context, task *pb.Task) error {
 	return nil
 }
 
-// Dequeue retrieves and locks the highest-priority task.
+// Dequeue — забираем задачу с наибольшим score из sorted set.
+// Используем SetNX для блокировки: если задача уже в обработке — пробуем следующую.
 func (q *RedisQueue) Dequeue(ctx context.Context) (*pb.Task, error) {
-	// Try priority queue first
 	result, err := q.client.ZPopMax(ctx, priorityQueueKey).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -134,7 +130,6 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*pb.Task, error) {
 		return nil, fmt.Errorf("failed to unmarshal task: %w", err)
 	}
 
-	// Try to acquire lock
 	lockKey := lockKeyPrefix + task.Id
 	locked, err := q.client.SetNX(ctx, lockKey, "1", defaultLockTTL).Result()
 	if err != nil {
@@ -142,7 +137,6 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*pb.Task, error) {
 	}
 
 	if !locked {
-		// Task is being processed, try next
 		return q.Dequeue(ctx)
 	}
 
@@ -153,7 +147,6 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*pb.Task, error) {
 	return &task, nil
 }
 
-// Ack acknowledges successful task completion and removes the lock.
 func (q *RedisQueue) Ack(ctx context.Context, taskID string) error {
 	lockKey := lockKeyPrefix + taskID
 	pipe := q.client.Pipeline()
@@ -168,7 +161,7 @@ func (q *RedisQueue) Ack(ctx context.Context, taskID string) error {
 	return nil
 }
 
-// Nack negatively acknowledges a task, re-enqueueing it with backoff.
+// Nack — снимаем лок, задача останется в sorted set для повторной обработки.
 func (q *RedisQueue) Nack(ctx context.Context, taskID string) error {
 	lockKey := lockKeyPrefix + taskID
 	pipe := q.client.Pipeline()
@@ -182,7 +175,6 @@ func (q *RedisQueue) Nack(ctx context.Context, taskID string) error {
 	return nil
 }
 
-// Remove removes a task from all queues.
 func (q *RedisQueue) Remove(ctx context.Context, taskID string) error {
 	lockKey := lockKeyPrefix + taskID
 	pipe := q.client.Pipeline()
@@ -197,7 +189,7 @@ func (q *RedisQueue) Remove(ctx context.Context, taskID string) error {
 	return nil
 }
 
-// EnqueueDeadLetter moves a task to the dead letter queue.
+// EnqueueDeadLetter — перемещаем задачу в dead letter sorted set и снимаем лок.
 func (q *RedisQueue) EnqueueDeadLetter(ctx context.Context, task *pb.Task) error {
 	data, err := json.Marshal(task)
 	if err != nil {
@@ -229,7 +221,7 @@ func (q *RedisQueue) EnqueueDeadLetter(ctx context.Context, task *pb.Task) error
 	return nil
 }
 
-// EnqueueScheduled adds a task to the scheduled queue for future execution.
+// EnqueueScheduled — записываем задачу в sorted set с score = unix timestamp вызова.
 func (q *RedisQueue) EnqueueScheduled(ctx context.Context, task *pb.Task, scheduledAt time.Time) error {
 	data, err := json.Marshal(task)
 	if err != nil {
@@ -248,7 +240,7 @@ func (q *RedisQueue) EnqueueScheduled(ctx context.Context, task *pb.Task, schedu
 	return nil
 }
 
-// ProcessScheduled checks for scheduled tasks that are ready to run.
+// ProcessScheduled — вытаскиваем задачи с score <= now и переносим в основную очередь.
 func (q *RedisQueue) ProcessScheduled(ctx context.Context) error {
 	now := time.Now().Unix()
 
@@ -269,10 +261,8 @@ func (q *RedisQueue) ProcessScheduled(ctx context.Context) error {
 			continue
 		}
 
-		// Remove from scheduled queue
 		q.client.ZRem(ctx, scheduledKey, data)
 
-		// Enqueue for immediate execution
 		if err := q.Enqueue(ctx, &task); err != nil {
 			q.logger.Error("Failed to enqueue scheduled task", zap.Error(err), zap.String("task_id", task.Id))
 		}
@@ -281,25 +271,22 @@ func (q *RedisQueue) ProcessScheduled(ctx context.Context) error {
 	return nil
 }
 
-// Size returns the number of tasks in the queue.
 func (q *RedisQueue) Size(ctx context.Context) (int64, error) {
 	return q.client.ZCard(ctx, defaultQueueKey).Result()
 }
 
-// DeadLetterSize returns the number of tasks in the dead letter queue.
 func (q *RedisQueue) DeadLetterSize(ctx context.Context) (int64, error) {
 	return q.client.ZCard(ctx, deadLetterKey).Result()
 }
 
-// calculateScore computes the priority score for a task.
-// Higher score = higher priority.
+// calculateScore — score = приоритет * 1M + доля секунды.
+// Приоритет доминирует, но при одинаковом приоритете FIFO сохраняется за счёт timestamp.
 func (q *RedisQueue) calculateScore(task *pb.Task) float64 {
 	priorityScore := float64(task.Priority) * 1000000
 	timestampScore := float64(time.Now().UnixMilli()) / 1000000.0
 	return priorityScore + timestampScore
 }
 
-// Close closes the Redis client connection.
 func (q *RedisQueue) Close() error {
 	return q.client.Close()
 }

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -15,17 +16,15 @@ import (
 )
 
 const (
-	maxRetryAttempts  = 3
-	retryBaseDelay    = 5 * time.Second
-	retryMaxDelay     = 5 * time.Minute
-	taskTimeout       = 5 * time.Minute
-	pollInterval      = 1 * time.Second
+	maxRetryAttempts = 3
+	retryBaseDelay   = 5 * time.Second
+	retryMaxDelay    = 5 * time.Minute
+	taskTimeout      = 5 * time.Minute
+	pollInterval     = 1 * time.Second
 )
 
-// TaskHandler processes a task and returns an error if it fails.
 type TaskHandler func(ctx context.Context, task *pb.Task) error
 
-// Config holds worker configuration.
 type Config struct {
 	Concurrency int
 	Queue       queue.Queue
@@ -35,7 +34,6 @@ type Config struct {
 	Handler     TaskHandler
 }
 
-// Worker processes tasks from the queue with concurrency control.
 type Worker struct {
 	config    Config
 	semaphore chan struct{}
@@ -45,7 +43,6 @@ type Worker struct {
 	mu        sync.Mutex
 }
 
-// New creates a new Worker with the given configuration.
 func New(config Config) *Worker {
 	if config.Concurrency <= 0 {
 		config.Concurrency = 5
@@ -63,7 +60,6 @@ func New(config Config) *Worker {
 	}
 }
 
-// Start begins processing tasks from the queue.
 func (w *Worker) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
@@ -72,10 +68,8 @@ func (w *Worker) Start(ctx context.Context) error {
 		zap.Int("concurrency", w.config.Concurrency),
 	)
 
-	// Start scheduled task processor
 	go w.processScheduledTasks(ctx)
 
-	// Start main processing loop
 	for {
 		select {
 		case <-ctx.Done():
@@ -91,7 +85,6 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 }
 
-// Stop gracefully stops the worker.
 func (w *Worker) Stop() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -110,15 +103,12 @@ func (w *Worker) Stop() {
 	w.config.Logger.Info("Worker stopped")
 }
 
-// processNext attempts to dequeue and process one task.
 func (w *Worker) processNext(ctx context.Context) error {
-	// Check if we can accept more tasks
 	select {
 	case w.semaphore <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		// At capacity, wait
 		time.Sleep(100 * time.Millisecond)
 		return nil
 	}
@@ -141,7 +131,6 @@ func (w *Worker) processNext(ctx context.Context) error {
 	return nil
 }
 
-// executeTask runs a task with retry logic and semaphore control.
 func (w *Worker) executeTask(ctx context.Context, task *pb.Task) {
 	defer w.wg.Done()
 	defer func() { <-w.semaphore }()
@@ -153,7 +142,6 @@ func (w *Worker) executeTask(ctx context.Context, task *pb.Task) {
 		zap.Int32("retry_count", task.RetryCount),
 	)
 
-	// Update task status to running
 	task.Status = pb.TaskStatus_TASK_STATUS_RUNNING
 	task.UpdatedAt = timestamppb.New(time.Now())
 	w.config.Storage.UpdateTask(ctx, task)
@@ -162,11 +150,9 @@ func (w *Worker) executeTask(ctx context.Context, task *pb.Task) {
 
 	startTime := time.Now()
 
-	// Create timeout context
 	taskCtx, cancel := context.WithTimeout(ctx, taskTimeout)
 	defer cancel()
 
-	// Execute the task
 	err := w.config.Handler(taskCtx, task)
 
 	duration := time.Since(startTime).Seconds()
@@ -181,7 +167,6 @@ func (w *Worker) executeTask(ctx context.Context, task *pb.Task) {
 	}
 }
 
-// handleTaskSuccess processes a successfully completed task.
 func (w *Worker) handleTaskSuccess(ctx context.Context, task *pb.Task) {
 	task.Status = pb.TaskStatus_TASK_STATUS_COMPLETED
 	task.UpdatedAt = timestamppb.New(time.Now())
@@ -202,7 +187,8 @@ func (w *Worker) handleTaskSuccess(ctx context.Context, task *pb.Task) {
 	)
 }
 
-// handleTaskError processes a failed task with retry logic.
+// handleTaskError — при ошибке считаем retry count, если превышен лимит — dead letter,
+// иначе переносим задачу в scheduled queue с exponential backoff + jitter.
 func (w *Worker) handleTaskError(ctx context.Context, task *pb.Task, err error) {
 	task.RetryCount++
 	task.ErrorMessage = err.Error()
@@ -216,15 +202,12 @@ func (w *Worker) handleTaskError(ctx context.Context, task *pb.Task, err error) 
 	)
 
 	if task.RetryCount >= task.MaxRetries {
-		// Move to dead letter queue
 		w.handleDeadLetter(ctx, task)
 		return
 	}
 
-	// Calculate exponential backoff with jitter
 	delay := w.calculateBackoff(task.RetryCount)
 
-	// Re-enqueue with delay
 	w.config.Logger.Info("Retrying task",
 		zap.String("task_id", task.Id),
 		zap.Int32("retry_count", task.RetryCount),
@@ -239,19 +222,16 @@ func (w *Worker) handleTaskError(ctx context.Context, task *pb.Task, err error) 
 	scheduledAt := time.Now().Add(delay)
 	if err := w.config.Queue.EnqueueScheduled(ctx, task, scheduledAt); err != nil {
 		w.config.Logger.Error("Failed to enqueue scheduled retry", zap.Error(err), zap.String("task_id", task.Id))
-		// Fallback to dead letter
 		w.handleDeadLetter(ctx, task)
 	}
 
 	w.config.Metrics.RetryAttempts.Inc()
 
-	// Ack the original dequeue
 	if err := w.config.Queue.Ack(ctx, task.Id); err != nil {
 		w.config.Logger.Error("Failed to ack retried task", zap.Error(err), zap.String("task_id", task.Id))
 	}
 }
 
-// handleDeadLetter moves a task to the dead letter queue.
 func (w *Worker) handleDeadLetter(ctx context.Context, task *pb.Task) {
 	task.Status = pb.TaskStatus_TASK_STATUS_FAILED
 	task.UpdatedAt = timestamppb.New(time.Now())
@@ -271,7 +251,8 @@ func (w *Worker) handleDeadLetter(ctx context.Context, task *pb.Task) {
 	)
 }
 
-// calculateBackoff computes exponential backoff with jitter.
+// calculateBackoff — экспоненциальный backoff с jitter: delay = base * 2^retryCount + rand(0, base).
+// Ограничен retryMaxDelay.
 func (w *Worker) calculateBackoff(retryCount int32) time.Duration {
 	delay := retryBaseDelay
 	for i := int32(0); i < retryCount; i++ {
@@ -282,10 +263,10 @@ func (w *Worker) calculateBackoff(retryCount int32) time.Duration {
 		delay = retryMaxDelay
 	}
 
-	return delay
+	jitter := time.Duration(rand.Int63n(int64(retryBaseDelay)))
+	return delay + jitter
 }
 
-// processScheduledTasks periodically checks for scheduled tasks ready to run.
 func (w *Worker) processScheduledTasks(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -302,7 +283,6 @@ func (w *Worker) processScheduledTasks(ctx context.Context) {
 	}
 }
 
-// defaultHandler is the default task handler that does nothing.
 func defaultHandler(ctx context.Context, task *pb.Task) error {
 	return nil
 }

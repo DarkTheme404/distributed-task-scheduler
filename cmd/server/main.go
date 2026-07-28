@@ -33,20 +33,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize storage
 	pgStore, err := storage.NewPostgresStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		logger.Fatal("Failed to connect to PostgreSQL", zap.Error(err))
 	}
 	defer pgStore.Close()
 
-	// Initialize metrics
 	m := metrics.NewMetrics()
-
-	// Initialize scheduler
 	s := scheduler.New(pgStore, m, logger)
 
-	// gRPC server
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", cfg.GRPCPort))
 	if err != nil {
 		logger.Fatal("Failed to listen", zap.Error(err))
@@ -66,17 +61,11 @@ func main() {
 	svc := scheduler.NewServer(s, m, logger)
 	pb.RegisterSchedulerServiceServer(grpcServer, svc)
 
-	// Health check
 	healthSrv := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthSrv)
-
-	// Reflection for grpcurl
 	reflection.Register(grpcServer)
-
-	// Prometheus metrics
 	grpc_prometheus.Register(grpcServer)
 
-	// HTTP metrics server
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +87,6 @@ func main() {
 		Handler: mux,
 	}
 
-	// Start servers
 	go func() {
 		logger.Info("gRPC server starting", zap.String("port", cfg.GRPCPort))
 		if err := grpcServer.Serve(lis); err != nil {
@@ -115,7 +103,6 @@ func main() {
 
 	healthSrv.SetServingStatus("scheduler", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh

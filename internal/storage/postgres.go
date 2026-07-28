@@ -14,7 +14,6 @@ import (
 
 var ErrTaskNotFound = errors.New("task not found")
 
-// Store defines the interface for task storage operations.
 type Store interface {
 	CreateTask(ctx context.Context, task *pb.Task) error
 	GetTask(ctx context.Context, id string) (*pb.Task, error)
@@ -25,12 +24,10 @@ type Store interface {
 	Close() error
 }
 
-// PostgresStore implements Store using PostgreSQL.
 type PostgresStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresStore creates a new PostgreSQL-backed store.
 func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -56,7 +53,6 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 	return &PostgresStore{pool: pool}, nil
 }
 
-// migrate creates the necessary database tables.
 func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	_, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS tasks (
@@ -85,7 +81,6 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return err
 }
 
-// CreateTask inserts a new task into the database.
 func (s *PostgresStore) CreateTask(ctx context.Context, task *pb.Task) error {
 	payload, err := protojson.Marshal(task)
 	if err != nil {
@@ -131,7 +126,8 @@ func (s *PostgresStore) CreateTask(ctx context.Context, task *pb.Task) error {
 	return err
 }
 
-// GetTask retrieves a task by ID using FOR UPDATE SKIP LOCKED.
+// GetTask — FOR UPDATE SKIP LOCKED используется чтобы воркеры не забирали одну задачу дважды.
+// Если строка уже залочена другим транзакционным контекстом — пропускаем её.
 func (s *PostgresStore) GetTask(ctx context.Context, id string) (*pb.Task, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, name, type, payload, priority, status, max_retries, retry_count,
@@ -153,7 +149,6 @@ func (s *PostgresStore) GetTask(ctx context.Context, id string) (*pb.Task, error
 	return task, nil
 }
 
-// UpdateTask updates an existing task.
 func (s *PostgresStore) UpdateTask(ctx context.Context, task *pb.Task) error {
 	payload, err := protojson.Marshal(task)
 	if err != nil {
@@ -204,7 +199,6 @@ func (s *PostgresStore) UpdateTask(ctx context.Context, task *pb.Task) error {
 	return nil
 }
 
-// DeleteTask removes a task by ID.
 func (s *PostgresStore) DeleteTask(ctx context.Context, id string) error {
 	result, err := s.pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, id)
 	if err != nil {
@@ -218,7 +212,6 @@ func (s *PostgresStore) DeleteTask(ctx context.Context, id string) error {
 	return nil
 }
 
-// ListTasks lists tasks with optional status filter and pagination.
 func (s *PostgresStore) ListTasks(ctx context.Context, status pb.TaskStatus, limit int, offset string) ([]*pb.Task, string, error) {
 	query := `
 		SELECT id, name, type, payload, priority, status, max_retries, retry_count,
@@ -255,18 +248,15 @@ func (s *PostgresStore) ListTasks(ctx context.Context, status pb.TaskStatus, lim
 	return tasks, lastID, nil
 }
 
-// Ping checks the database connection.
 func (s *PostgresStore) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
-// Close closes the connection pool.
 func (s *PostgresStore) Close() error {
 	s.pool.Close()
 	return nil
 }
 
-// scanTask scans a single row into a Task proto.
 func scanTask(row pgx.Row) (*pb.Task, error) {
 	var task pb.Task
 	var payload string
@@ -311,7 +301,6 @@ func scanTask(row pgx.Row) (*pb.Task, error) {
 	return &task, nil
 }
 
-// scanTaskRows scans a row from rows result into a Task proto.
 func scanTaskRows(rows pgx.Rows) (*pb.Task, error) {
 	var task pb.Task
 	var payload string

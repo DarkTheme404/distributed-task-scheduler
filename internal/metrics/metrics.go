@@ -7,7 +7,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Metrics holds all Prometheus metrics for the scheduler.
 type Metrics struct {
 	TasksSubmitted   prometheus.Counter
 	TasksCompleted   prometheus.Counter
@@ -26,7 +25,6 @@ type Metrics struct {
 	DeadLetterCount  prometheus.Counter
 }
 
-// NewMetrics creates and registers all Prometheus metrics.
 func NewMetrics() *Metrics {
 	m := &Metrics{
 		TasksSubmitted: prometheus.NewCounter(prometheus.CounterOpts{
@@ -92,7 +90,6 @@ func NewMetrics() *Metrics {
 		}),
 	}
 
-	// Register all metrics
 	prometheus.MustRegister(
 		m.TasksSubmitted,
 		m.TasksCompleted,
@@ -114,7 +111,6 @@ func NewMetrics() *Metrics {
 	return m
 }
 
-// Handler returns an HTTP handler for Prometheus metrics.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
 }

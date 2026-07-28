@@ -17,19 +17,17 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Scheduler manages task submission, DAG resolution, and execution orchestration.
 type Scheduler struct {
-	storage  storage.Store
-	queue    queue.Queue
-	metrics  *metrics.Metrics
-	logger   *zap.Logger
-	eventCh  chan *pb.TaskEvent
-	mu       sync.RWMutex
-	dags     map[string]*pb.DAG
-	tasks    map[string]*pb.Task
+	storage storage.Store
+	queue   queue.Queue
+	metrics *metrics.Metrics
+	logger  *zap.Logger
+	eventCh chan *pb.TaskEvent
+	mu      sync.RWMutex
+	dags    map[string]*pb.DAG
+	tasks   map[string]*pb.Task
 }
 
-// New creates a new Scheduler instance.
 func New(storage storage.Store, m *metrics.Metrics, logger *zap.Logger) *Scheduler {
 	return &Scheduler{
 		storage: storage,
@@ -42,12 +40,10 @@ func New(storage storage.Store, m *metrics.Metrics, logger *zap.Logger) *Schedul
 	}
 }
 
-// SetQueue sets the queue backend for the scheduler.
 func (s *Scheduler) SetQueue(q queue.Queue) {
 	s.queue = q
 }
 
-// SubmitTask creates and queues a new task.
 func (s *Scheduler) SubmitTask(ctx context.Context, req *pb.SubmitTaskRequest) (*pb.Task, error) {
 	if req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "task name is required")
@@ -80,13 +76,11 @@ func (s *Scheduler) SubmitTask(ctx context.Context, req *pb.SubmitTaskRequest) (
 		task.ScheduledAt = now
 	}
 
-	// Store in database
 	if err := s.storage.CreateTask(ctx, task); err != nil {
 		s.logger.Error("Failed to store task", zap.Error(err), zap.String("task_id", task.Id))
 		return nil, status.Error(codes.Internal, "failed to create task")
 	}
 
-	// Queue for execution
 	if s.queue != nil {
 		if err := s.queue.Enqueue(ctx, task); err != nil {
 			s.logger.Error("Failed to enqueue task", zap.Error(err), zap.String("task_id", task.Id))
@@ -114,7 +108,6 @@ func (s *Scheduler) SubmitTask(ctx context.Context, req *pb.SubmitTaskRequest) (
 	return task, nil
 }
 
-// SubmitDAG creates a DAG with dependency resolution.
 func (s *Scheduler) SubmitDAG(ctx context.Context, req *pb.SubmitDAGRequest) (*pb.DAG, error) {
 	if req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "DAG name is required")
@@ -133,7 +126,6 @@ func (s *Scheduler) SubmitDAG(ctx context.Context, req *pb.SubmitDAGRequest) (*p
 		CreatedAt: now,
 	}
 
-	// Create tasks from nodes
 	for _, node := range req.Nodes {
 		maxRetries := node.MaxRetries
 		if maxRetries == 0 {
@@ -160,7 +152,6 @@ func (s *Scheduler) SubmitDAG(ctx context.Context, req *pb.SubmitDAGRequest) (*p
 		}
 	}
 
-	// Validate edges and create dependencies
 	for _, edge := range req.Edges {
 		if _, ok := dag.Tasks[edge.From]; !ok {
 			return nil, status.Errorf(codes.InvalidArgument, "unknown source node: %s", edge.From)
@@ -176,7 +167,6 @@ func (s *Scheduler) SubmitDAG(ctx context.Context, req *pb.SubmitDAGRequest) (*p
 		dag.Tasks[edge.To].Dependencies = append(dag.Tasks[edge.To].Dependencies, edge.From)
 	}
 
-	// Validate no cycles
 	if err := s.validateDAG(dag); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -185,7 +175,7 @@ func (s *Scheduler) SubmitDAG(ctx context.Context, req *pb.SubmitDAGRequest) (*p
 	s.dags[dag.Id] = dag
 	s.mu.Unlock()
 
-	// Enqueue root tasks (no dependencies)
+	// запускаем корневые задачи (без зависимостей)
 	for _, task := range dag.Tasks {
 		if len(task.Dependencies) == 0 && s.queue != nil {
 			if err := s.queue.Enqueue(ctx, task); err != nil {
@@ -205,7 +195,9 @@ func (s *Scheduler) SubmitDAG(ctx context.Context, req *pb.SubmitDAGRequest) (*p
 	return dag, nil
 }
 
-// validateDAG checks for cycles in the DAG using topological sort.
+// validateDAG — проверка на циклы через топологическую сортировку (Kahn's algorithm).
+// Считаем in-degree для каждой вершины, запускаем BFS из вершин с нулевым входом.
+// Если посетили не все вершины — значит есть цикл.
 func (s *Scheduler) validateDAG(dag *pb.DAG) error {
 	inDegree := make(map[string]int)
 	for name := range dag.Tasks {
@@ -213,9 +205,8 @@ func (s *Scheduler) validateDAG(dag *pb.DAG) error {
 	}
 
 	for _, task := range dag.Tasks {
-		for _, dep := range task.Dependencies {
+		for range task.Dependencies {
 			inDegree[task.Name]++
-			_ = dep
 		}
 	}
 
@@ -249,7 +240,6 @@ func (s *Scheduler) validateDAG(dag *pb.DAG) error {
 	return nil
 }
 
-// GetTask retrieves a task by ID.
 func (s *Scheduler) GetTask(ctx context.Context, taskID string) (*pb.Task, error) {
 	task, err := s.storage.GetTask(ctx, taskID)
 	if err != nil {
@@ -258,7 +248,6 @@ func (s *Scheduler) GetTask(ctx context.Context, taskID string) (*pb.Task, error
 	return task, nil
 }
 
-// GetDAG retrieves a DAG by ID.
 func (s *Scheduler) GetDAG(ctx context.Context, dagID string) (*pb.DAG, error) {
 	s.mu.RLock()
 	dag, ok := s.dags[dagID]
@@ -271,7 +260,6 @@ func (s *Scheduler) GetDAG(ctx context.Context, dagID string) (*pb.DAG, error) {
 	return dag, nil
 }
 
-// CancelTask cancels a pending or running task.
 func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	task, err := s.storage.GetTask(ctx, taskID)
 	if err != nil {
@@ -309,7 +297,6 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	return nil
 }
 
-// ListTasks lists tasks with optional filters and pagination.
 func (s *Scheduler) ListTasks(ctx context.Context, statusFilter pb.TaskStatus, pageSize int32, pageToken string) ([]*pb.Task, string, error) {
 	if pageSize <= 0 {
 		pageSize = 50
@@ -323,7 +310,7 @@ func (s *Scheduler) ListTasks(ctx context.Context, statusFilter pb.TaskStatus, p
 	return tasks, nextToken, nil
 }
 
-// HandleTaskCompletion processes a completed or failed task and triggers dependents.
+// HandleTaskCompletion — обработка завершения задачи и запуск зависимых задач из DAG.
 func (s *Scheduler) HandleTaskCompletion(ctx context.Context, task *pb.Task) error {
 	s.logger.Info("Task completed",
 		zap.String("task_id", task.Id),
@@ -344,7 +331,6 @@ func (s *Scheduler) HandleTaskCompletion(ctx context.Context, task *pb.Task) err
 		Timestamp: timestamppb.New(time.Now()),
 	})
 
-	// If task belongs to a DAG, check for dependent tasks
 	if task.ParentDagId != "" {
 		if err := s.resolveDependents(ctx, task); err != nil {
 			s.logger.Error("Failed to resolve dependents", zap.Error(err), zap.String("task_id", task.Id))
@@ -354,7 +340,8 @@ func (s *Scheduler) HandleTaskCompletion(ctx context.Context, task *pb.Task) err
 	return nil
 }
 
-// resolveDependents enqueues tasks whose dependencies are now satisfied.
+// resolveDependents — проверяем, какие задачи из DAG можно запустить после завершения текущей.
+// Перебираем все pending-задачи, проверяем что все зависимости выполнены.
 func (s *Scheduler) resolveDependents(ctx context.Context, completedTask *pb.Task) error {
 	s.mu.RLock()
 	dag, ok := s.dags[completedTask.ParentDagId]
@@ -397,7 +384,6 @@ func (s *Scheduler) resolveDependents(ctx context.Context, completedTask *pb.Tas
 	return nil
 }
 
-// emitEvent sends a task event to the event channel.
 func (s *Scheduler) emitEvent(event *pb.TaskEvent) {
 	select {
 	case s.eventCh <- event:
@@ -406,7 +392,6 @@ func (s *Scheduler) emitEvent(event *pb.TaskEvent) {
 	}
 }
 
-// SubscribeEvents returns a read-only channel for task events.
 func (s *Scheduler) SubscribeEvents() <-chan *pb.TaskEvent {
 	return s.eventCh
 }

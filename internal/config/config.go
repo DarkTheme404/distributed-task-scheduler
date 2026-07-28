@@ -5,28 +5,21 @@ import (
 	"strconv"
 )
 
-// Config holds all configuration for the application.
 type Config struct {
-	// Server
 	GRPCPort    string
 	MetricsPort string
 
-	// Database
 	PostgresDSN string
 
-	// Redis
 	RedisAddr     string
 	RedisPassword string
 	RedisDB       int
 
-	// Worker
 	WorkerConcurrency int
 
-	// Logging
 	LogLevel string
 }
 
-// Load reads configuration from environment variables.
 func Load() *Config {
 	return &Config{
 		GRPCPort:          getEnv("GRPC_PORT", "50051"),
@@ -40,7 +33,6 @@ func Load() *Config {
 	}
 }
 
-// getEnv returns the value of an environment variable or a default value.
 func getEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value
@@ -48,7 +40,6 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvInt returns the integer value of an environment variable or a default value.
 func getEnvInt(key string, defaultValue int) int {
 	if value, exists := os.LookupEnv(key); exists {
 		if intVal, err := strconv.Atoi(value); err == nil {
